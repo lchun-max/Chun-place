@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tiny Fishing Clone</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #1a2536;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+            color: white;
+            user-select: none;
+        }
+
+        #game-container {
+            position: relative;
+            width: 400px;
+            height: 600px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        canvas {
+            background: linear-gradient(to bottom, #87CEEB 0%, #1E90FF 20%, #00008B 100%);
+            display: block;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 15px;
+            box-sizing: border-box;
+        }
+
+        .hud-element {
+            background: rgba(0, 0, 0, 0.6);
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 16px;
+            pointer-events: auto;
+            backdrop-filter: blur(3px);
+        }
+
+        #top-bar {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+        }
+
+        #upgrade-menu {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-bottom: 10px;
+        }
+
+        .btn {
+            background: #ff9f43;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: 0.2s;
+            pointer-events: auto;
+            box-shadow: 0 4px #d35400;
+        }
+
+        .btn:active {
+            transform: translateY(4px);
+            box-shadow: 0 0px #d35400;
+        }
+
+        .btn:disabled {
+            background: #7f8c8d;
+            box-shadow: 0 4px #2c3e50;
+            cursor: not-allowed;
+        }
+
+        #click-prompt {
+            position: absolute;
+            top: 40%;
+            width: 100%;
+            text-align: center;
+            font-size: 24px;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <canvas id="gameCanvas" width="400" height="600"></canvas>
+        
+        <div id="ui-layer">
+            <div id="top-bar">
+                <div class="hud-element" id="cash-display">Cash: $0</div>
+                <div class="hud-element" id="cargo-display">Fish: 0/3</div>
+            </div>
+
+            <div id="click-prompt">CLICK TO CAST!</div>
+
+            <div id="upgrade-menu">
+                <button class="btn" id="up-depth" onclick="upgrade('depth')">Depth (+$10) <br><span id="depth-cost">$20</span></button>
+                <button class="btn" id="up-max" onclick="upgrade('max')">Max Fish (+1) <br><span id="max-cost">$30</span></button>
+            </div>
+        </div>
+    </div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// Game States
+const STATE_SURFACE = 0;
+const STATE_SINKING = 1;
+const STATE_REELING = 2;
+let gameState = STATE_SURFACE;
+
+// Player Economy & Upgrades
+let cash = 0;
+let maxDepth = 1500; 
+let maxFishCapacity = 3;
+let depthUpgradeCost = 20;
+let maxFishUpgradeCost = 30;
+
+// Gameplay variables
+let hook = { x: 200, y: 120, targetX: 200, speed: 6 };
+let cameraY = 0;
+let caughtFish = [];
+let fishList = [];
+
+// Fish Types Configuration
+const fishTypes = [
+    { name: "Goldfish", color: "#ff9f43", value: 10, minDepth: 100, maxDepth: 600, size: 12 },
+    { name: "Blue Tang", color: "#54a0ff", value: 25, minDepth: 400, maxDepth: 1000, size: 14 },
+    { name: "Jellyfish", color: "#a55eea", value: 50, minDepth: 700, maxDepth: 1300, size: 16 },
+    { name: "Golden Carp", color: "#f1c40f", value: 150, minDepth: 1000, maxDepth: 1500, size: 15 },
+    { name: "Abyssal Shark", color: "#2c3e50", value: 400, minDepth: 1300, maxDepth: 2500, size: 25 }
+];
+
+// Input handling
+canvas.addEventListener('mousemove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    hook.targetX = e.clientX - rect.left;
+});
+
+canvas.addEventListener('touchmove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    hook.targetX = e.touches[0].clientX - rect.left;
+});
+
+canvas.addEventListener('click', () => {
+    if (gameState === STATE_SURFACE) {
+        gameState = STATE_SINKING;
+        document.getElementById('click-prompt').style.display = 'none';
+        document.getElementById('upgrade-menu').style.display = 'none';
+        generateFish();
+    }
+});
+
+// Generate fish based on player's current upgraded depth
+function generateFish() {
+    fishList = [];
+    let totalFishCount = Math.floor(maxDepth / 25); // Scaling fish count with depth
+    
+    for (let i = 0; i < totalFishCount; i++) {
+        let randomDepth = Math.random() * (maxDepth - 200) + 200;
+        // Filter pool to valid fish at this depth range
+        let pool = fishTypes.filter(f => randomDepth >= f.minDepth && randomDepth <= f.maxDepth);
+        if (pool.length === 0) pool = [fishTypes[0]]; // Fallback
+        
+        let type = pool[Math.floor(Math.random() * pool.length)];
+        
+        fishList.push({
+            x: Math.random() * (canvas.width - 40) + 20,
+            y: randomDepth,
+            type: type,
+            direction: Math.random() > 0.5 ? 1 : -1,
+            speed: Math.random() * 1.5 + 0.5,
+            caught: false
+        });
+    }
+}
+
+// Upgrade System
+function upgrade(type) {
+    if (type === 'depth' && cash >= depthUpgradeCost) {
+        cash -= depthUpgradeCost;
+        maxDepth += 300;
+        depthUpgradeCost = Math.floor(depthUpgradeCost * 1.6);
+    } else if (type === 'max' && cash >= maxFishUpgradeCost) {
+        cash -= maxFishUpgradeCost;
+        maxFishCapacity += 1;
+        maxFishUpgradeCost = Math.floor(maxFishUpgradeCost * 1.7);
+    }
+    updateUI();
+}
+
+function updateUI() {
+    document.getElementById('cash-display').innerText = `Cash: $${cash}`;
+    document.getElementById('cargo-display').innerText = `Fish: ${caughtFish.length}/${maxFishCapacity}`;
+    
+    document.getElementById('depth-cost').innerText = `$${depthUpgradeCost}`;
+    document.getElementById('max-cost').innerText = `$${maxFishUpgradeCost}`;
+    
+    document.getElementById('up-depth').disabled = cash < depthUpgradeCost;
+    document.getElementById('up-max').disabled = cash < maxFishUpgradeCost;
+}
+
+// Core Game Loop Updates
+function update() {
+    // Smooth movement for hook X
+    hook.x += (hook.targetX - hook.x) * 0.15;
+    hook.x = Math.max(10, Math.min(canvas.width - 10, hook.x));
+
+    if (gameState === STATE_SURFACE) {
+        cameraY = 0;
+        hook.y = 120;
+    } 
+    else if (gameState === STATE_SINKING) {
+        hook.y += hook.speed;
+        cameraY = hook.y - 150; // Camera follows hook
+        
+        // Reach the bottom upgrade limit
+        if (hook.y >= maxDepth) {
+            gameState = STATE_REELING;
+        }
+    } 
+    else if (gameState === STATE_REELING) {
+        hook.y -= hook.speed * 0.8;
+        cameraY = hook.y - 150;
+
+        // Return to surface
+        if (hook.y <= 120) {
+            gameState = STATE_SURFACE;
+            // Sell fish
+            caughtFish.forEach(fish => cash += fish.type.value);
+            caughtFish = [];
+            document.getElementById('click-prompt').style.display = 'block';
+            document.getElementById('upgrade-menu').style.display = 'flex';
+            updateUI();
+        }
+
+        // Check for fish collisions on the way up
+        if (caughtFish.length < maxFishCapacity) {
+            fishList.forEach(fish => {
+                if (!fish.caught) {
+                    let dist = Math.hypot(hook.x - fish.x, hook.y - fish.y);
+                    if (dist < fish.type.size + 10) {
+                        fish.caught = true;
+                        caughtFish.push(fish);
+                        updateUI();
+                    }
+                }
+            });
+        }
+    }
+
+    // Move uncaught fish side to side
+    fishList.forEach(fish => {
+        if (!fish.caught) {
+            fish.x += fish.direction * fish.speed;
+            if (fish.x < 10 || fish.x > canvas.width - 10) {
+                fish.direction *= -1;
+            }
+        } else {
+            // Stack caught fish on the hook line smoothly
+            let index = caughtFish.indexOf(fish);
+            fish.x = hook.x;
+            fish.y = hook.y + (index * 15) + 15;
+        }
+    });
+}
+
+// Rendering graphics
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    ctx.save();
+    ctx.translate(0, -cameraY);
+
+    // Draw Sky (Only visible near surface)
+    ctx.fillStyle = "#87CEEB";
+    ctx.fillRect(0, -300, canvas.width, 420);
+
+    // Draw Simple Boat
+    ctx.fillStyle = "#ecf0f1";
+    ctx.fillRect(160, 80, 80, 25);
+
+    // Draw Fishing Line
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(200, 95); // Boat position
+    ctx.lineTo(hook.x, hook.y);
+    ctx.stroke();
+
+    // Draw Hook
+    ctx.strokeStyle = "#b2bec3";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(hook.x, hook.y, 6, 0, Math.PI, false);
+    ctx.stroke();
+
+    // Draw Fish
+    fishList.forEach(fish => {
+        ctx.fillStyle = fish.type.color;
+        ctx.beginPath();
+        // Body ellipse
+        ctx.ellipse(fish.x, fish.y, fish.type.size, fish.type.size / 1.6, 0, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Tail Fin
+        ctx.beginPath();
+        let tailX = fish.direction > 0 ? fish.x - fish.type.size : fish.x + fish.type.size;
+        ctx.moveTo(tailX, fish.y);
+        ctx.lineTo(tailX + (fish.direction * -6), fish.y - 6);
+        ctx.lineTo(tailX + (fish.direction * -6), fish.y + 6);
+        ctx.fill();
+    });
+
+    ctx.restore();
+}
+
+// Game Loop
+function gameLoop() {
+    update();
+    draw();
+    requestAnimationFrame(gameLoop);
+}
+
+// Start the game
+updateUI();
+gameLoop();
+</script>
+
+</body>
+</html>
